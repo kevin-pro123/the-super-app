@@ -8,7 +8,7 @@ import {
   Dimensions,
 } from 'react-native';
 import { QrCode, ArrowLeft, DollarSign } from 'lucide-react-native';
-import { supabase } from '@/lib/supabase';
+import { api } from '@/lib/api';
 
 interface WithdrawScreenProps {
   user: any;
@@ -28,16 +28,8 @@ export default function WithdrawScreen({ user, onBack }: WithdrawScreenProps) {
 
   const fetchEarnings = async () => {
     try {
-      const { data, error } = await supabase
-        .from('transactions')
-        .select('amount')
-        .eq('driver_id', user.id)
-        .eq('status', 'completed');
-
-      if (error) throw error;
-      
-      const totalEarnings = data?.reduce((sum, transaction) => sum + transaction.amount, 0) || 0;
-      setAvailableEarnings(totalEarnings);
+      const data = await api<{ total: number }>('/transactions/earnings');
+      setAvailableEarnings(data.total);
     } catch (error) {
       console.error('Error fetching earnings:', error);
     }

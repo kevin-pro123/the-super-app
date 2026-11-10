@@ -8,7 +8,7 @@ import {
   Alert,
   Switch,
 } from 'react-native';
-import { supabase } from '@/lib/supabase';
+import { api } from '@/lib/api';
 import { useLocation } from '@/hooks/useLocation';
 import { PaymentRequest } from '@/types/database';
 import { Bell, DollarSign, Users, MapPin } from 'lucide-react-native';
@@ -27,48 +27,21 @@ export default function DriverView({ user, onNavigate }: DriverViewProps) {
   useEffect(() => {
     fetchPaymentRequests();
     fetchEarnings();
-    
-    // Subscribe to new payment requests
-    const subscription = supabase
-      .channel('payment-requests')
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'payment_requests',
-        },
-        (payload) => {
-          fetchPaymentRequests();
-        }
-      )
-      .subscribe();
 
-    return () => {
-      subscription.unsubscribe();
-    };
+    // Revisar nuevas solicitudes de pago cada 5 segundos
+    const interval = setInterval(fetchPaymentRequests, 5000);
+    return () => clearInterval(interval);
   }, [user.id]);
 
   useEffect(() => {
     if (isOnline && location) {
-      updateDriverLocation();
+      updateDriverLocation(true);
     }
   }, [isOnline, location]);
 
   const fetchPaymentRequests = async () => {
     try {
-      const { data, error } = await supabase
-        .from('payment_requests')
-        .select(`
-          *,
-          users!payment_requests_passenger_id_fkey(full_name),
-          buses!payment_requests_bus_id_fkey(license_plate, route)
-        `)
-        .eq('buses.driver_id', user.id)
-        .eq('status', 'pending')
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
+      const data = await api<PaymentRequest[]>('/payment-requests/pending');
       setPaymentRequests(data || []);
     } catch (error) {
       console.error('Error fetching payment requests:', error);
@@ -77,64 +50,26 @@ export default function DriverView({ user, onNavigate }: DriverViewProps) {
 
   const fetchEarnings = async () => {
     try {
-      const { data, error } = await supabase
-        .from('transactions')
-        .select('amount')
-        .eq('driver_id', user.id)
-        .eq('status', 'completed');
-
-      if (error) throw error;
-      
-      const totalEarnings = data?.reduce((sum, transaction) => sum + transaction.amount, 0) || 0;
-      setEarnings(totalEarnings);
+      const data = await api<{ total: number }>('/transactions/earnings');
+      setEarnings(data.total);
     } catch (error) {
       console.error('Error fetching earnings:', error);
     }
   };
 
-  const updateDriverLocation = async () => {
-    if (!location || !isOnline) return;
+  const updateDriverLocation = async (online: boolean) => {
+    if (!location) return;
 
     try {
-      // First, get or create the driver's bus
-      let { data: buses, error } = await supabase
-        .from('buses')
-        .select('*')
-        .eq('driver_id', user.id)
-        .single();
-
-      if (error && error.code !== 'PGRST116') {
-        throw error;
-      }
-
-      if (!buses) {
-        // Create new bus entry
-        const { error: createError } = await supabase
-          .from('buses')
-          .insert({
-            driver_id: user.id,
-            license_plate: `BUS-${user.id.slice(0, 6)}`,
-            route: `Ruta ${Math.floor(Math.random() * 100)}`,
-            latitude: location.latitude,
-            longitude: location.longitude,
-            is_active: true,
-          });
-
-        if (createError) throw createError;
-      } else {
-        // Update existing bus location
-        const { error: updateError } = await supabase
-          .from('buses')
-          .update({
-            latitude: location.latitude,
-            longitude: location.longitude,
-            is_active: isOnline,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', buses.id);
-
-        if (updateError) throw updateError;
-      }
+      // Crea el bus del conductor si no existe, o actualiza su ubicación
+      await api('/buses/me', {
+        method: 'PUT',
+        body: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          is_active: online,
+        },
+      });
     } catch (error) {
       console.error('Error updating driver location:', error);
     }
@@ -142,73 +77,27 @@ export default function DriverView({ user, onNavigate }: DriverViewProps) {
 
   const handlePaymentRequest = async (requestId: string, accept: boolean) => {
     try {
+      await api(`/payment-requests/${requestId}/${accept ? 'accept' : 'reject'}`, {
+        method: 'POST',
+      });
+
       if (accept) {
-        // Get the payment request details
-        const { data: request, error: requestError } = await supabase
-          .from('payment_requests')
-          .select('*')
-          .eq('id', requestId)
-          .single();
-
-        if (requestError) throw requestError;
-
-        // Update passenger balance
-        const { error: balanceError } = await supabase.rpc(
-          'update_passenger_balance',
-          {
-            passenger_id: request.passenger_id,
-            amount: -request.amount
-          }
-        );
-
-        if (balanceError) throw balanceError;
-
-        // Create transaction
-        const { error: transactionError } = await supabase
-          .from('transactions')
-          .insert({
-            passenger_id: request.passenger_id,
-            driver_id: user.id,
-            bus_id: request.bus_id,
-            amount: request.amount,
-            passenger_count: request.passenger_count,
-            status: 'completed',
-          });
-
-        if (transactionError) throw transactionError;
-
-        // Update request status
-        const { error: updateError } = await supabase
-          .from('payment_requests')
-          .update({ status: 'accepted' })
-          .eq('id', requestId);
-
-        if (updateError) throw updateError;
-
         Alert.alert('Pago aceptado', 'El pago ha sido procesado exitosamente');
       } else {
-        // Reject payment
-        const { error } = await supabase
-          .from('payment_requests')
-          .update({ status: 'rejected' })
-          .eq('id', requestId);
-
-        if (error) throw error;
-
         Alert.alert('Pago rechazado', 'El pago ha sido rechazado');
       }
-
-      fetchPaymentRequests();
-      fetchEarnings();
     } catch (error) {
       console.error('Error handling payment request:', error);
-      Alert.alert('Error', 'No se pudo procesar la solicitud');
+      Alert.alert('Error', (error as Error).message || 'No se pudo procesar la solicitud');
+    } finally {
+      fetchPaymentRequests();
+      fetchEarnings();
     }
   };
 
   const toggleOnlineStatus = (value: boolean) => {
     setIsOnline(value);
-    updateDriverLocation();
+    updateDriverLocation(value);
   };
 
   const renderPaymentRequest = ({ item }: { item: any }) => (

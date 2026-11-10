@@ -8,7 +8,7 @@ import {
   Dimensions,
 } from 'react-native';
 import { QrCode, ArrowLeft } from 'lucide-react-native';
-import { supabase } from '@/lib/supabase';
+import { api, notifyAuthChange } from '@/lib/api';
 
 interface DepositScreenProps {
   user: any;
@@ -30,16 +30,12 @@ export default function DepositScreen({ user, onBack }: DepositScreenProps) {
     setLoading(true);
 
     try {
-      // Update user balance
-      const { error } = await supabase.rpc(
-        'update_passenger_balance',
-        {
-          passenger_id: user.id,
-          amount: selectedAmount
-        }
-      );
-
-      if (error) throw error;
+      // Actualiza el saldo del usuario en el servidor
+      await api('/wallet/deposit', {
+        method: 'POST',
+        body: { amount: selectedAmount },
+      });
+      notifyAuthChange(); // recarga el saldo en todas las pantallas
 
       Alert.alert('Depósito exitoso', `Se depositaron S/. ${selectedAmount} a tu cuenta`);
       setSelectedAmount(null);

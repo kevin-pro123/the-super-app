@@ -1,57 +1,43 @@
-import { useState, useEffect } from 'react';
-import { supabase } from '@/lib/supabase';
+import { useState, useEffect, useCallback } from 'react';
+import { api, getToken, setToken, onAuthChange, notifyAuthChange } from '@/lib/api';
 import { User } from '@/types/database';
 
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    // Get initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        fetchUserProfile(session.user.id);
-      } else {
-        setLoading(false);
-      }
-    });
-
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        fetchUserProfile(session.user.id);
-      } else {
-        setUser(null);
-        setLoading(false);
-      }
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
-
-  const fetchUserProfile = async (userId: string) => {
+  const fetchUserProfile = useCallback(async () => {
+    if (!getToken()) {
+      setUser(null);
+      setLoading(false);
+      return;
+    }
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', userId)
-        .single();
-
-      if (error) throw error;
-      setUser(data);
+      setUser(await api<User>('/auth/me'));
     } catch (error) {
       console.error('Error fetching user profile:', error);
+      setUser(null);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    fetchUserProfile();
+    return onAuthChange(fetchUserProfile);
+  }, [fetchUserProfile]);
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-    return { error };
+    try {
+      const data = await api<{ token: string }>('/auth/login', {
+        method: 'POST',
+        body: { email, password },
+      });
+      setToken(data.token);
+      return { error: null };
+    } catch (error) {
+      return { error: error as Error };
+    }
   };
 
   const signUp = async (
@@ -62,32 +48,28 @@ export function useAuth() {
     userType: 'adult' | 'child' | 'student' | 'driver',
     documentNumber: string
   ) => {
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-    });
-
-    if (error || !data.user) return { error };
-
-    // Create user profile
-    const { error: profileError } = await supabase
-      .from('users')
-      .insert({
-        id: data.user.id,
-        email,
-        full_name: fullName,
-        role,
-        user_type: userType,
-        document_number: documentNumber,
-        balance: role === 'passenger' ? 0 : 0,
+    try {
+      const data = await api<{ token: string }>('/auth/register', {
+        method: 'POST',
+        body: {
+          email,
+          password,
+          full_name: fullName,
+          role,
+          user_type: userType,
+          document_number: documentNumber,
+        },
       });
-
-    return { error: profileError };
+      setToken(data.token);
+      return { error: null };
+    } catch (error) {
+      return { error: error as Error };
+    }
   };
 
   const signOut = async () => {
-    const { error } = await supabase.auth.signOut();
-    return { error };
+    setToken(null);
+    return { error: null };
   };
 
   return {
@@ -96,5 +78,6 @@ export function useAuth() {
     signIn,
     signUp,
     signOut,
+    refreshUser: notifyAuthChange,
   };
 }

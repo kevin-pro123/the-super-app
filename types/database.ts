@@ -18,6 +18,8 @@ export interface Bus {
   longitude: number;
   is_active: boolean;
   updated_at: string;
+  users?: { full_name: string }; // nombre del conductor
+  distance?: number;             // km, calculado en la app
 }
 
 export interface Transaction {

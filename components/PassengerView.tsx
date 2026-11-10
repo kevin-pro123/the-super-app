@@ -8,7 +8,7 @@ import {
   Modal,
   Alert,
 } from 'react-native';
-import { supabase, PRICES } from '@/lib/supabase';
+import { api, notifyAuthChange, PRICES } from '@/lib/api';
 import { useLocation } from '@/hooks/useLocation';
 import { Bus, PaymentRequest } from '@/types/database';
 import { MapPin, CreditCard, Users, Plus, Minus } from 'lucide-react-native';
@@ -45,15 +45,8 @@ export default function PassengerView({ user, onNavigate }: PassengerViewProps) 
     if (!location) return;
 
     try {
-      const { data, error } = await supabase
-        .from('buses')
-        .select(`
-          *,
-          users!buses_driver_id_fkey(full_name)
-        `)
-        .eq('is_active', true);
-
-      if (error) throw error;
+      const data = await api<Bus[]>('/buses/active');
+      notifyAuthChange(); // actualiza el saldo cuando el conductor acepta un pago
 
       // Calculate distances and sort by proximity
       const busesWithDistance = data?.map((bus: any) => {
@@ -121,24 +114,20 @@ export default function PassengerView({ user, onNavigate }: PassengerViewProps) 
 
     try {
       // Create payment request
-      const { error } = await supabase
-        .from('payment_requests')
-        .insert({
-          passenger_id: user.id,
+      await api('/payment-requests', {
+        method: 'POST',
+        body: {
           bus_id: selectedBus.id,
-          amount: total,
           passenger_count: passengerCount,
-          status: 'pending',
-        });
-
-      if (error) throw error;
+        },
+      });
 
       Alert.alert('Solicitud enviada', 'Tu solicitud de pago ha sido enviada al conductor');
       setShowPaymentModal(false);
       setSelectedBus(null);
     } catch (error) {
       console.error('Error creating payment request:', error);
-      Alert.alert('Error', 'No se pudo procesar el pago');
+      Alert.alert('Error', (error as Error).message || 'No se pudo procesar el pago');
     }
   };
 
